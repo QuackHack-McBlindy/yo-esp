@@ -1,0 +1,32 @@
+[package]
+name = "yo-esp"
+version = "0.1.0"
+edition = "2024"
+
+description = "ESP32-client for the yo voice assistant framework (no_std + alloc)"
+license = "MIT"
+repository = "https://github.com/QuackHack-McBlindy/yo-esp"
+authors = ["QuackHack-McBlindy"]
+readme = "README.md"
+keywords = ["embedded", "i2s", "audio", "embassy", "no-std"]
+categories = ["embedded", "network-programming"]
+
+[lib]
+crate-type = ["lib"]
+
+[dependencies]
+embassy-net = { version = "0.9.0", default-features = false, features = ["tcp", "medium-ethernet", "proto-ipv4"] }
+embassy-time = { version = "0.5.0", default-features = false }
+embassy-futures = "0.1.0"
+embassy-sync = { version = "0.8.0", default-features = false }
+embassy-executor = { version = "0.9.1", default-features = false, features = ["defmt"] }
+heapless = "0.8.0"
+defmt = { version = "1.0.0", optional = true }
+critical-section = "1.2.0"
+esp-hal = { version = "~1.0", optional = true, features = ["defmt", "unstable"] }
+esp-alloc = { version = "0.9.0", features = ["defmt"] }
+
+
+[features]
+default = ["i2s", "defmt"]
+i2s = ["esp-hal"]

@@ -13,7 +13,7 @@ Add **yo-esp** as a dependency in `Cargo.toml`.
 
 ```toml
 [dependencies]
-yo-esp = "0.1.0"
+yo-esp = "0.1.1"
 ```
   
 
@@ -24,45 +24,37 @@ yo-esp = "0.1.0"
 
 
 ```bash
-use yo_esp::{
-    microphone::Microphone,
-    run_audio_stream,
-    AudioStreamConfig,
-    CommandHandler,
-};
+use yo_esp::*;
 
 struct MyHandler;
 impl CommandHandler for MyHandler {
-    fn on_wake_word_detected(&mut self) {
+    fn on_detected(&mut self) {
         info!("Wake word detected!");
     }
-    fn on_command_executed(&mut self) {
+    fn on_thinking(&mut self) {
+        info!("server started transcription");
+    }    
+    fn on_executed(&mut self) {
         info!("Command executed");
     }
-    fn on_command_failed(&mut self) {
+    fn on_failed(&mut self) {
         info!("Command failed");
     }
 }
 
-#[embassy_executor::task]
-async fn audio_task(
-    mic: Microphone,
-    handler: MyHandler,
-    stack: &'static embassy_net::Stack<'static>,
-    addr: SocketAddr,
-    config: AudioStreamConfig,
-) {
-    run_audio_stream(mic, handler, stack, addr, config).await;
-}
 
-// in main() after i2s init:
-        let mic = Microphone::new(i2s_rx);
-        let handler = MyHandler;
-        let config = AudioStreamConfig {
-            room: "esp", // leave as `esp`
-            ..Default::default()
-        };
-        spawner.spawn(audio_task(mic, handler, stack, remote_addr, config)).unwrap();
+    let handler = MyHandler;
+
+    spawner.spawn(yo_esp::audio_capture_task(
+        i2s_rx, stack,
+        "192.168.1.100:12345".parse().unwrap(),
+        "esp",
+        handler,
+    )).unwrap();
+
+    spawner.spawn(yo_esp::speaker_task(transfer)).unwrap();
+    spawner.spawn(yo_esp::stream_speaker(stack, 12345)).unwrap();
+}
 ```
 
 

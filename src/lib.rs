@@ -24,7 +24,6 @@ const DEBUG_MIC: bool = false;
 const TCP_RX_BUF_SIZE: usize = 1024;
 const TCP_TX_BUF_SIZE: usize = 4096;
 
-pub const SPEAKER_DMA_BUFFER_SIZE: usize = 4096;
 
 const STEREO_SAMPLES_PER_WRITE: usize = 256;
 const PLAYBACK_TCP_RX_BUF_SIZE: usize = 4096;
@@ -320,8 +319,8 @@ pub async fn play_fail() {
 
 
 #[embassy_executor::task]
-pub async fn speaker_task(
-    mut transfer: I2sWriteDmaTransferAsync<'static, &'static mut [u8; SPEAKER_DMA_BUFFER_SIZE]>,
+pub async fn speaker_task<const N: usize>(
+    mut transfer: I2sWriteDmaTransferAsync<'static, &'static mut [u8; N]>,
 ) -> ! {
     let mut pipe_buf = [0u8; 1024];
     let silence = [0u8; 256];

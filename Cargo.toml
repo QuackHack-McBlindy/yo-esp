@@ -14,8 +14,10 @@ categories = ["embedded", "network-programming"]
 [lib]
 crate-type = ["lib"]
 
-[dependencies]
+[target.'cfg(target_arch = "xtensa")'.dependencies]
 esp-hal = { version = "1.1.0-rc.0", features = ["esp32s3", "unstable"] }
+
+[dependencies]
 embassy-net = { version = "0.9.0", features = ["tcp", "proto-ipv4", "medium-ethernet"] }
 embassy-time = "0.5.0"
 embassy-futures = "0.1.0"

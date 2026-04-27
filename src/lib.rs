@@ -13,6 +13,29 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::pipe::Pipe;
 use core::net::SocketAddr;
 
+#[cfg(target_arch = "xtensa")]
+mod hardware;
+
+// dummy to satisfy compiler
+#[cfg(not(target_arch = "xtensa"))]
+mod hardware {
+    pub struct Microphone;
+    impl Microphone {
+        pub fn new(_: ()) -> Self { Self }
+        pub async fn read_chunk(&mut self) -> Result<(Vec<f32>, bool), ()> {
+            Err(())
+        }
+    }
+
+    pub async fn speaker_task(_: ()) -> ! { loop {} }
+    pub async fn stream_speaker(_: (), _: u16) {}
+    pub fn play(_: &[u8]) -> usize { 0 }
+    pub async fn play_sound(_: &[u8]) {}
+    pub async fn play_ding() {}
+    pub async fn play_done() {}
+    pub async fn play_fail() {}
+}
+
 
 const STEREO_SAMPLES_PER_READ: usize = 256;
 const MONO_SAMPLES_PER_READ: usize = STEREO_SAMPLES_PER_READ / 2;

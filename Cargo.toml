@@ -1,6 +1,6 @@
 [package]
 name = "yo-esp"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 
 description = "ESP32-client for the yo voice assistant framework (no_std + alloc)"
@@ -13,7 +13,6 @@ categories = ["embedded", "network-programming"]
 
 [lib]
 crate-type = ["lib"]
-
 
 [dependencies]
 esp-hal = { version = "1.1.0-rc.0", features = ["esp32s3", "unstable"] }

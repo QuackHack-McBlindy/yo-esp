@@ -126,7 +126,7 @@ pub trait CommandHandler {
     async fn on_failed(&mut self, elapsed_ms: Option<u64>);
 }
 
-
+#[embassy_executor::task]
 pub async fn audio_capture_task<H: CommandHandler>(
     i2s_rx: I2sRx<'static, Async>,
     stack: &'static Stack<'static>,

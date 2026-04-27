@@ -6,12 +6,15 @@ use esp_hal::i2s::master::{I2sRx, I2sTx, asynch::{I2sReadDmaTransferAsync, I2sWr
 use esp_hal::Async;
 use alloc::vec::Vec;
 use alloc::vec;
+use alloc::boxed::Box;
 use embassy_net::{Stack, tcp::TcpSocket, IpAddress};
 use embassy_time::{Duration, Timer, Instant};
 use embassy_futures::select::{select, Either};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::pipe::Pipe;
 use core::net::SocketAddr;
+use core::future::Future;
+use core::pin::Pin;
 
 extern crate alloc;
 
@@ -115,24 +118,24 @@ impl Microphone {
 }
 
 
+
 pub trait CommandHandler {
-    /// 0x01 – WAKE WORD DETECTED
-    async fn on_detected(&mut self);
-    /// 0x02 – SERVER STARTED TRANSCRIPTION
-    async fn on_thinking(&mut self);
-    /// 0x03 – COMMAND EXECUTED SUCCESSFULLY
-    async fn on_executed(&mut self, elapsed_ms: Option<u64>);
-    /// 0x04 – COMMAND EXECUTION FAILED
-    async fn on_failed(&mut self, elapsed_ms: Option<u64>);
+    fn on_detected(&mut self) -> Pin<Box<dyn Future<Output = ()> + '_>>;
+    fn on_thinking(&mut self) -> Pin<Box<dyn Future<Output = ()> + '_>>;
+    fn on_executed(&mut self, elapsed_ms: Option<u64>) -> Pin<Box<dyn Future<Output = ()> + '_>>;
+    fn on_failed(&mut self, elapsed_ms: Option<u64>) -> Pin<Box<dyn Future<Output = ()> + '_>>;
 }
 
+
+
+
 #[embassy_executor::task]
-pub async fn audio_capture_task<H: CommandHandler>(
+pub async fn audio_capture_task(
     i2s_rx: I2sRx<'static, Async>,
     stack: &'static Stack<'static>,
     remote_addr: SocketAddr,
-    room: &str,
-    mut handler: H,
+    room: &'static str,
+    handler: alloc::boxed::Box<dyn CommandHandler>,
 ) {
     let remote_endpoint = match remote_addr {
         SocketAddr::V4(v4) => (IpAddress::Ipv4(v4.ip().octets().into()), v4.port()),

@@ -24,7 +24,7 @@ const DEBUG_MIC: bool = false;
 const TCP_RX_BUF_SIZE: usize = 1024;
 const TCP_TX_BUF_SIZE: usize = 4096;
 
-pub const SPEAKER_DMA_BUFFER_SIZE: usize = 4096;
+pub const SPEAKER_DMA_BUFFER_SIZE: usize = 16368;
 
 const STEREO_SAMPLES_PER_WRITE: usize = 256;
 const PLAYBACK_TCP_RX_BUF_SIZE: usize = 4096;

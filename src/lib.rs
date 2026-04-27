@@ -135,7 +135,7 @@ pub async fn audio_capture_task(
     stack: &'static Stack<'static>,
     remote_addr: SocketAddr,
     room: &'static str,
-    handler: alloc::boxed::Box<dyn CommandHandler>,
+    mut handler: alloc::boxed::Box<dyn CommandHandler>,
 ) {
     let remote_endpoint = match remote_addr {
         SocketAddr::V4(v4) => (IpAddress::Ipv4(v4.ip().octets().into()), v4.port()),

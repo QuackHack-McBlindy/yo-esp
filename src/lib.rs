@@ -13,6 +13,8 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::pipe::Pipe;
 use core::net::SocketAddr;
 
+extern crate alloc;
+
 const STEREO_SAMPLES_PER_READ: usize = 256;
 const MONO_SAMPLES_PER_READ: usize = STEREO_SAMPLES_PER_READ / 2;
 /// MUST MATCH WAKE WORD CHUNK SIZE

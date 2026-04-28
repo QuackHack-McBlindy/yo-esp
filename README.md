@@ -22,7 +22,7 @@ Add `yo-esp` as a dependency in `Cargo.toml`.
 
 ```toml
 [dependencies]
-yo-esp = "0.1.2"
+yo-esp = "0.1.3"
 ```
 
 You will also need a compatible network stack (embassy-net), an I²S driver (esp-hal), and the codec drivers (es7210, es8311).  
@@ -30,7 +30,7 @@ Example `Cargo.toml`:
 
 ```toml
 [dependencies]
-yo-esp = "0.1.2"
+yo-esp = "0.1.3"
 embassy-net = { version = "0.5", features = ["tcp", "udp", "dhcpv4", "dns"] }
 esp-hal = { version = "0.22", features = ["async", "esp32s3"] }
 es7210 = "0.1.0"

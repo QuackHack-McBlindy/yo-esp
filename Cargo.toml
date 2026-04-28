@@ -1,6 +1,6 @@
 [package]
 name = "yo-esp"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 
 description = "ESP32-S3 client for the yo voice assistant framework (no_std + alloc)"

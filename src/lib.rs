@@ -1,6 +1,6 @@
 #![no_std]
 
-use defmt::{info, error};
+use defmt::{info, debug, error};
 use defmt::Debug2Format;
 use esp_hal::i2s::master::{I2sRx, I2sTx, asynch::{I2sReadDmaTransferAsync, I2sWriteDmaTransferAsync}};
 use esp_hal::Async;
@@ -15,9 +15,7 @@ use embassy_sync::pipe::Pipe;
 use core::net::SocketAddr;
 use core::future::Future;
 use core::pin::Pin;
-use embassy_sync::signal::Signal;
-
-
+use libm::sqrtf;
 
 extern crate alloc;
 
@@ -25,12 +23,6 @@ const STEREO_SAMPLES_PER_READ: usize = 256;
 const MONO_SAMPLES_PER_READ: usize = STEREO_SAMPLES_PER_READ / 2;
 /// MUST MATCH WAKE WORD CHUNK SIZE
 pub const OWW_MODEL_CHUNK_SIZE: usize = 1280;
-const DEBUG_MIC: bool = false;
-
-// BOOL - TRUE = START INTERCOM / FALSE = STOP INTERCOM
-static INTERCOM_SIGNAL: Signal<CriticalSectionRawMutex, bool> = Signal::new();
-// BOOL - TRUE = START PUSH-TO-TALK / FALSE = STOP PUSH-TO-TALK
-static PUSH_TO_TALK_SIGNAL: Signal<CriticalSectionRawMutex, bool> = Signal::new();
 
 
 const TCP_RX_BUF_SIZE: usize = 1024;
@@ -43,23 +35,14 @@ const PLAYBACK_TCP_RX_BUF_SIZE: usize = 4096;
 const PLAYBACK_TCP_TX_BUF_SIZE: usize = 2048;
 const RING_BUFFER_SIZE: usize = 16384;
 
-// HELPERS
+
 fn rms_f32(samples: &[f32]) -> f32 {
     if samples.is_empty() {
         return 0.0;
     }
     let sum_squares: f32 = samples.iter().map(|&x| x * x).sum();
-    (sum_squares / samples.len() as f32).sqrt()
+    sqrtf(sum_squares / samples.len() as f32)
 }
-
-
-const DING_SOUND: &[u8] =
-    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/sound/ding_esp.raw"));
-const DONE_SOUND: &[u8] =
-    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/sound/done_esp.wav"));
-const FAIL_SOUND: &[u8] =
-    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/sound/fail_esp.wav"));
-
 
 pub struct Microphone {
     i2s_rx: I2sRx<'static, Async>,
@@ -93,7 +76,8 @@ impl Microphone {
                 }
             }
 
-            if DEBUG_MIC {
+            #[cfg(debug_assertions)]
+            {
                 let stereo = unsafe {
                     core::slice::from_raw_parts(
                         self.stereo_buffer.as_ptr() as *const i16,
@@ -146,13 +130,7 @@ pub trait CommandHandler {
 }
 
 
-pub async fn push_to_talk_start() {
-    PUSH_TO_TALK_SIGNAL.signal(true);
-}
 
-pub async fn push_to_talk_stop() { 
-    PUSH_TO_TALK_SIGNAL.signal(false);
-}
 
 #[embassy_executor::task]
 pub async fn audio_capture_task(
@@ -226,9 +204,9 @@ pub async fn audio_capture_task(
             continue;
         }
 
-        'stream: loop {
-            let mut command_start: Option<Instant> = None;
+        let mut command_start: Option<Instant> = None;
 
+        'stream: loop {
             let (chunk, _silent): (Vec<f32>, bool) = match mic.read_chunk().await {
                 Ok(pair) => pair,
                 Err(_) => {
@@ -238,44 +216,7 @@ pub async fn audio_capture_task(
                 }
             };
 
-            let rms = rms_f32(&chunk);
-            defmt::info!("RMS: {}", rms); 
-
-
-            if INTERCOM_ACTIVE.load(Ordering::Relaxed) {
-                // SEND RAW SAMPLES (NO LENGTH PREFIX)
-                let mut raw_buf = vec![0u8; chunk.len() * 4];
-                for (i, &sample) in chunk.iter().enumerate() {
-                    let offset = i * 4;
-                    raw_buf[offset..offset + 4].copy_from_slice(&sample.to_le_bytes());
-                }
-
-                if let Err(e) = socket.write_all(&raw_buf).await {
-                    error!("intercom send fail: {:?}", e);
-                    break 'stream;
-                }
-
-                // CHECK SERVER RESPONSE (STOP SIGNAL)
-                let mut cmd = [0u8; 1];
-                let read_fut = socket.read(&mut cmd);
-                let timeout_fut = Timer::after(Duration::from_millis(10));
-                match select(read_fut, timeout_fut).await {
-                    embassy_futures::select::Either::First(Ok(1)) => {
-                        match byte_buf[0] {
-                            0x06 => { // STOP INTERCOM
-                                info!("Intercom stopped by server");
-                            }
-
-                            Either::First(Err(e)) => {
-                                error!("socket read error in intercom: {:?}", e);
-                                break 'stream;
-                            }
-                            _ => {}
-                        }
-                        continue; // STAY IN LOOP, NEXT CHUNK
-                    }
-                }
-            }    
+            debug!("RMS: {}", rms_f32(&chunk));
 
             let mut chunk_buffer = vec![0u8; 4 + OWW_MODEL_CHUNK_SIZE * 4];
             chunk_buffer[0..4].copy_from_slice(&(OWW_MODEL_CHUNK_SIZE as u32).to_le_bytes());
@@ -318,9 +259,7 @@ pub async fn audio_capture_task(
                             let elapsed = command_start.map(|s| s.elapsed().as_millis());
                             if let Some(ms) = elapsed {
                                 info!("✅ Executed command! Took {} ms", ms);
-                            } else {
-                                info!("✅ Executed command!");
-                            }
+                            } else { info!("✅ Executed command!"); }
                             handler.on_executed(elapsed).await;
                             command_start = None;
                         }
@@ -328,9 +267,7 @@ pub async fn audio_capture_task(
                             let elapsed = command_start.map(|s| s.elapsed().as_millis());
                             if let Some(ms) = elapsed {
                                 info!("💩 FAILED execution ({} ms)", ms);
-                            } else {
-                                info!("💩 FAILED execution!");
-                            }
+                            } else { info!("💩 FAILED execution!"); }
                             handler.on_failed(elapsed).await;
                             command_start = None;
                         }
@@ -346,7 +283,7 @@ pub async fn audio_capture_task(
             }
         }
 
-        info!("❌ reconnecting...");
+        info!("❌ reconnecting to yo...");
         let _ = socket.close();
         Timer::after(Duration::from_secs(15)).await;
     }
@@ -372,18 +309,22 @@ pub async fn play_sound(sound: &'static [u8]) {
     }
 }
 
+#[cfg(feature = "sounds")]
+const DING_SOUND: &[u8] =
+    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/sound/ding_esp.raw"));
+#[cfg(feature = "sounds")]
+const DONE_SOUND: &[u8] =
+    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/sound/done_esp.wav"));
+#[cfg(feature = "sounds")]
+const FAIL_SOUND: &[u8] =
+    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/sound/fail_esp.wav"));
 
-pub async fn play_ding() {
-    play_sound(DING_SOUND).await;
-}
-
-pub async fn play_done() {
-    play_sound(DONE_SOUND).await;
-}
-
-pub async fn play_fail() {
-    play_sound(FAIL_SOUND).await;
-}
+#[cfg(feature = "sounds")]
+pub async fn play_ding() { play_sound(DING_SOUND).await; }
+#[cfg(feature = "sounds")]
+pub async fn play_done() { play_sound(DONE_SOUND).await; }
+#[cfg(feature = "sounds")]
+pub async fn play_fail() { play_sound(FAIL_SOUND).await; }
 
 
 #[embassy_executor::task]
@@ -441,7 +382,7 @@ pub async fn stream_speaker(
             continue;
         }
 
-        info!("audio client connected");
+        info!("🔉 client connected");
         socket.set_timeout(Some(Duration::from_secs(30)));
 
         let mut buf = [0u8; 1024];
@@ -465,7 +406,7 @@ pub async fn stream_speaker(
                 }
             }
         }
-        info!("client disconnected");
+        info!("🔇 client disconnected");
         let _ = socket.close();
     }
 }

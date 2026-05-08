@@ -1,6 +1,6 @@
 [package]
 name = "yo-esp"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 
 description = "ESP32-S3 client for the yo voice assistant framework (no_std + alloc)"
@@ -9,7 +9,7 @@ repository = "https://github.com/QuackHack-McBlindy/yo-esp"
 authors = ["QuackHack-McBlindy"]
 readme = "README.md"
 keywords = ["embedded", "i2s", "audio", "embassy", "no-std"]
-categories = ["embedded", "network-programming"]
+categories = ["embedded", "no-std"]
 
 [lib]
 crate-type = ["lib"]

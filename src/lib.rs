@@ -15,6 +15,9 @@ use embassy_sync::pipe::Pipe;
 use core::net::SocketAddr;
 use core::future::Future;
 use core::pin::Pin;
+use embassy_sync::signal::Signal;
+
+
 
 extern crate alloc;
 
@@ -23,6 +26,12 @@ const MONO_SAMPLES_PER_READ: usize = STEREO_SAMPLES_PER_READ / 2;
 /// MUST MATCH WAKE WORD CHUNK SIZE
 pub const OWW_MODEL_CHUNK_SIZE: usize = 1280;
 const DEBUG_MIC: bool = false;
+
+// BOOL - TRUE = START INTERCOM / FALSE = STOP INTERCOM
+static INTERCOM_SIGNAL: Signal<CriticalSectionRawMutex, bool> = Signal::new();
+// BOOL - TRUE = START PUSH-TO-TALK / FALSE = STOP PUSH-TO-TALK
+static PUSH_TO_TALK_SIGNAL: Signal<CriticalSectionRawMutex, bool> = Signal::new();
+
 
 const TCP_RX_BUF_SIZE: usize = 1024;
 const TCP_TX_BUF_SIZE: usize = 4096;
@@ -33,6 +42,16 @@ const STEREO_SAMPLES_PER_WRITE: usize = 256;
 const PLAYBACK_TCP_RX_BUF_SIZE: usize = 4096;
 const PLAYBACK_TCP_TX_BUF_SIZE: usize = 2048;
 const RING_BUFFER_SIZE: usize = 16384;
+
+// HELPERS
+fn rms_f32(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let sum_squares: f32 = samples.iter().map(|&x| x * x).sum();
+    (sum_squares / samples.len() as f32).sqrt()
+}
+
 
 const DING_SOUND: &[u8] =
     include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/sound/ding_esp.raw"));
@@ -127,7 +146,13 @@ pub trait CommandHandler {
 }
 
 
+pub async fn push_to_talk_start() {
+    PUSH_TO_TALK_SIGNAL.signal(true);
+}
 
+pub async fn push_to_talk_stop() { 
+    PUSH_TO_TALK_SIGNAL.signal(false);
+}
 
 #[embassy_executor::task]
 pub async fn audio_capture_task(
@@ -212,6 +237,45 @@ pub async fn audio_capture_task(
                     continue;
                 }
             };
+
+            let rms = rms_f32(&chunk);
+            defmt::info!("RMS: {}", rms); 
+
+
+            if INTERCOM_ACTIVE.load(Ordering::Relaxed) {
+                // SEND RAW SAMPLES (NO LENGTH PREFIX)
+                let mut raw_buf = vec![0u8; chunk.len() * 4];
+                for (i, &sample) in chunk.iter().enumerate() {
+                    let offset = i * 4;
+                    raw_buf[offset..offset + 4].copy_from_slice(&sample.to_le_bytes());
+                }
+
+                if let Err(e) = socket.write_all(&raw_buf).await {
+                    error!("intercom send fail: {:?}", e);
+                    break 'stream;
+                }
+
+                // CHECK SERVER RESPONSE (STOP SIGNAL)
+                let mut cmd = [0u8; 1];
+                let read_fut = socket.read(&mut cmd);
+                let timeout_fut = Timer::after(Duration::from_millis(10));
+                match select(read_fut, timeout_fut).await {
+                    embassy_futures::select::Either::First(Ok(1)) => {
+                        match byte_buf[0] {
+                            0x06 => { // STOP INTERCOM
+                                info!("Intercom stopped by server");
+                            }
+
+                            Either::First(Err(e)) => {
+                                error!("socket read error in intercom: {:?}", e);
+                                break 'stream;
+                            }
+                            _ => {}
+                        }
+                        continue; // STAY IN LOOP, NEXT CHUNK
+                    }
+                }
+            }    
 
             let mut chunk_buffer = vec![0u8; 4 + OWW_MODEL_CHUNK_SIZE * 4];
             chunk_buffer[0..4].copy_from_slice(&(OWW_MODEL_CHUNK_SIZE as u32).to_le_bytes());

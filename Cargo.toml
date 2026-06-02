@@ -1,24 +1,40 @@
 [package]
-name = "yo-esp"
+name    = "yo-esp"
 version = "0.1.5"
 edition = "2024"
 
-description = "ESP32-S3 client for the yo voice assistant framework (no_std + alloc)"
-license = "MIT"
+description = """
+    yo-esp is a bare‑metal, no_std audio streaming client for the yo voice assistant. It provides everything needed to capture microphone audio, stream it to a backend server, receive and play back TTS/audio, and react to server‑side wake‑word detection, speech‑to‑text, intent recognition and command execution.""" 
+
+authors    = ["QuackHack-McBlindy"]
 repository = "https://github.com/QuackHack-McBlindy/yo-esp"
-authors = ["QuackHack-McBlindy"]
-readme = "README.md"
-keywords = ["embedded", "i2s", "audio", "embassy", "no-std"]
-categories = ["embedded", "no-std"]
+license    = "MIT"
+readme     = "README.md"
+keywords   = [ "no-std", "esp-hal", "embedded", "i2s", "audio", "esp32s3", "embassy", "esp32"]
+categories = [
+    "embedded",
+    "no-std",
+    "development-tools",
+    "network-programming"
+]
 
 [lib]
 crate-type = ["lib"]
 
 [dependencies]
-esp-hal = { version = "1.1.0-rc.0", features = ["esp32s3", "unstable"] }
+esp-hal = { version = "1.1.1", features = ["esp32s3", "unstable"] }
 embassy-net = { version = "0.9.0", features = ["tcp", "proto-ipv4", "medium-ethernet"] }
 embassy-time = "0.5.0"
 embassy-futures = "0.1.0"
 embassy-sync = "0.8.0"
 embassy-executor = "0.10.0"
+libm = "0.2" 
 defmt = "1.0.0"
+
+[features]
+sounds = []
+
+
+[patch.crates-io]
+#esp-hal = { git = "https://github.com/QUackHack-McBlindy/esp-hal", branch = "main" }
+esp-hal = { git = "https://github.com/QUackHack-McBlindy/esp-hal", branch = "main", features = ["esp32s3", "unstable"] }

@@ -8,11 +8,13 @@ It runs on the **ESP32‑S3** and provides everything needed to capture micropho
    
 
 > **What it does**  
-> * Streams 16 kHz mono audio from an I²S microphone (using the ES7210 ADC driver) to a remote wake‑word / STT / intent server over TCP.  
-> * Receives audio from the server (TTS, server-side files, HTTP/HTTPS, playlists) and plays it through the I²S speaker (ES8311 DAC).  
+> * Streams 16 kHz mono audio from an I²S microphone to a remote wake‑word / STT / intent server over TCP.  
+> * Supports **push‑to‑talk** mode – records while a button is held and sends the full utterance in one go.  
+> * Receives audio from the server (TTS, music, etc.) and plays it through the I²S speaker.  
 > * Dispatches callbacks for wake‑word detected, thinking, command executed, and command failed events.  
-> * Includes built‑in “ding”, “done” and “fail” notification sounds.  
-> * Completely `no_std`, runs on bare metal with `embassy‑net` and `esp‑hal`.  
+> * Built‑in “ding”, “done” and “fail” notification sounds (enable with feature `sounds`).  
+> * Completely `no_std`, runs on bare metal with `embassy‑net`, `esp‑hal` and `embassy‑executor`.  
+> * All internal tasks are controllable from anywhere via global `embassy‑sync` channels.  
 
 
 ## **Installation**
@@ -22,7 +24,7 @@ Add `yo-esp` as a dependency in `Cargo.toml`.
 
 ```toml
 [dependencies]
-yo-esp = "0.1.3"
+yo-esp = "0.1.5"
 ```
 
 You will also need a compatible network stack (embassy-net), an I²S driver (esp-hal), and the codec drivers (es7210, es8311).  
@@ -30,11 +32,11 @@ Example `Cargo.toml`:
 
 ```toml
 [dependencies]
-yo-esp = "0.1.3"
-embassy-net = { version = "0.5", features = ["tcp", "udp", "dhcpv4", "dns"] }
-esp-hal = { version = "0.22", features = ["async", "esp32s3"] }
-es7210 = "0.1.0"
-es8311 = "0.1.0"
+yo-esp = "0.1.5"
+embassy-executor = { version = "0.10.0", features = ["defmt"] }
+esp-radio = { version = "0.18.0", features = [ "ble", "coex", "defmt", "esp-alloc", "esp32s3", "unstable", "wifi", ] }
+embassy-net = { version = "0.9.0", features = [ "defmt", "dns", "dhcpv4", "medium-ethernet", "tcp", "udp", ] }
+esp-hal  = { version = "1.1.1", features = ["defmt", "esp32s3", "unstable"] }
 embedded-hal = "1.0"
 defmt = "0.3"
 ```
@@ -85,34 +87,43 @@ impl CommandHandler for VoiceHandler {
     }
 }
 
-#[esp_rtos::main]
-async fn main(spawner: embassy_executor::Spawner) -> ! {
-    // ... (set up Wi‑Fi, I²C, I²S, codecs; see the full example in the repository) ...
 
-    let handler: alloc::boxed::Box<dyn CommandHandler> = alloc::boxed::Box::new(VoiceHandler);
+    #[esp_rtos::main]
+    async fn main(spawner: embassy_executor::Spawner) -> ! {
+        // ... set up Wi‑Fi, I²S RX/TX, codecs ...
 
-    // Start the speaker DMA pump
-    spawner.spawn(speaker_task(i2s_tx_transfer)).ok();
-    // Route TCP 12345 to the speaker
-    spawner.spawn(stream_speaker(stack, 12345)).ok();
-    // Route TCP 12345 from microphone to server
-    // A bidirectional connection is established. 
-    spawner.spawn(audio_capture_task(i2s_rx, stack, remote_addr, "esp", handler)).ok();
+        let handler: alloc::boxed::Box<dyn CommandHandler> = alloc::boxed::Box::new(VoiceHandler);
 
-    loop {
-        embassy_time::Timer::after(embassy_time::Duration::from_secs(60)).await;
+        spawner.spawn(speaker_task(i2s_tx_transfer)).ok();
+        spawner.spawn(stream_speaker(stack, 12345)).ok();
+        spawner.spawn(audio_capture_task(i2s_rx, stack, "192.168.1.100", 54321, "esp", handler)).ok();
+
+        // Optional: a push-to-talk button task
+        #[embassy_executor::task]
+        async fn push_to_talk(mut button: esp_hal::gpio::Input<'static>) {
+            loop {
+                button.wait_for_low().await;
+                let _ = VOICE_CMD.send(VoiceCommand::Pushed).await;
+                button.wait_for_high().await;
+                let _ = VOICE_CMD.send(VoiceCommand::Released).await;
+            }
+        }
+
+        loop {
+            embassy_time::Timer::after(embassy_time::Duration::from_secs(60)).await;
+        }
     }
-}
-```
 
 > [!NOTE]
-> A complete, runnable example can be found in the `ESP32‑S3‑BOX‑3-rs` [repository](https://github.com/QuackHack-McBlindy/ESP32-S3-BOX-3-rs).  
+> A complete, runnable example can be found in the `ESP32‑S3‑WATCH-rs` [repository](https://github.com/QuackHack-McBlindy/ESP32-S3-WATCH-rs).  
 
   
 
 ## **API overview**
 
 ### **`CommandHandler` trait**
+
+The same four callbacks are dispatched based on server responses:
 
 | Method | Server byte | Meaning |
 |--------|-------------|---------|
@@ -121,15 +132,31 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
 | `on_executed(elapsed_ms)` | `0x03` | Command was executed successfully |
 | `on_failed(elapsed_ms)` | `0x04` | Command execution failed |
 
+### **Control channels**
+
+All internal tasks can be controlled from anywhere using global `embassy‑sync` channels:
+
+| Channel        | Command type      | Send from anywhere …          |
+|----------------|-------------------|-------------------------------|
+| `VOICE_CMD`    | `VoiceCommand`    | `Enabled`, `Disabled`, `Pushed`, `Released` |
+| `SPEAKER_CMD`  | `SpeakerCommand`  | `Start`, `Stop`               |
+| `STREAM_CMD`   | `StreamCommand`   | `Start`, `Stop`               |
+
+Example – enable wake‑word detection:
+
+    let _ = yo_esp::VOICE_CMD.send(yo_esp::VoiceCommand::Enabled).await;
+
 ### **Tasks**
 
 | Task | Description |
 |------|-------------|
-| `audio_capture_task(i2s_rx, stack, remote_addr, room, handler)` | Streams microphone audio to the server and dispatches `CommandHandler` callbacks. |
-| `speaker_task(transfer)` | Pumps audio data from an internal ring buffer (`PIPE`) to the I²S DAC. |
+| `audio_capture_task(i2s_rx, stack, host, port, room, handler)` | Streams microphone audio to the server (continuous or push‑to‑talk) and dispatches `CommandHandler` callbacks. |
+| `speaker_task(transfer)` | Pumps audio data from an internal ring buffer to the I²S DAC. |
 | `stream_speaker(stack, listen_port)` | Accepts a TCP connection on `listen_port` and writes incoming audio into the ring buffer. |
 
 ### **Sound helpers**
+
+Available when the `sounds` feature is enabled:
 
 | Function | Plays |
 |----------|-------|
@@ -137,46 +164,39 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
 | `play_done()` | The “done” success sound |
 | `play_fail()` | The “fail” error sound |
 
-You can also push arbitrary audio using `play(data: &[u8])`.  
+You can also push arbitrary raw audio into the speaker pipe with `play(data: &[u8])`.
 
 > [!NOTE]  
-> **I included a helper script for streaming various audio types to the ESP32‑S3**  
-> **Supports streaming desktop microphone to ESP32-S3 for intercom mode.**  
-> **You will find helper at: `examples/esp-play.sh`**   
+> **A helper script for streaming various audio types to the ESP32‑S3 is included in `examples/esp-play.sh`.**  
+> **It also supports streaming your desktop microphone to the ESP32‑S3 for intercom mode.**  
 
 
-###  **Hardware / platform requirements**
+### **Hardware / platform requirements**
 
-- **ESP32‑S3 (the library uses esp‑hal I²S and DMA).**  
-
-- **ES7210 quad ADC for microphone input (also works with other I²S microphones; adapt the codec driver).**  
-
-- **ES8311 codec for speaker output.**  
-
-- **Wi‑Fi connectivity through embassy‑net + esp‑radio.**  
-
+- **ESP32‑S3 (I²S + DMA support via `esp‑hal`).**  
+- **Any I²S microphone and I²S speaker codec compatible with `esp‑hal` (e.g., ES7210 + ES8311 on the official dev‑kits).**  
+- **Wi‑Fi connectivity through `embassy‑net` + `esp‑radio`.**  
 - **`embassy‑executor` for async tasks.**  
 
-  
+<br>
 
 ## **Architecture**
 
+                  ┌──────────────────────────────────┐
+                  │          yo-esp (ESP32‑S3)        │
+ Microphone ──────┤ I²S RX ──► audio_capture_task     │── TCP ──► yo server (STT, TTS, intent)
+                  │              ├─ wake‑word mode     │
+                  │              └─ push‑to‑talk mode  │
+                  │                                    │
+       Speaker ◄──┤ I²S TX ◄── speaker_task           │◄─ TCP ─── (Any audio)
+                  │          stream_speaker           │
+                  └──────────────────────────────────┘
 
-```
-                  ┌─────────────────────────────┐
-                  │     yo-esp (ESP32‑S3)        │
- Microphone ──────┤ I²S RX ──► audio_capture_task│── TCP ──► yo server (STT, TTS, intent)
-                  │                              │
-       Speaker ◄──┤ I²S TX ◄── speaker_task      │◄─ TCP ─── (Any audio)
-                  │          stream_speaker      │
-                  └─────────────────────────────┘
-```
-
-> * `audio_capture_task` reads I²S, converts to mono `f32`, buffers into chunks of `1280` samples (matching the wake‑word model), and sends them to the server.  
-> * The server replies with a single byte per chunk to signal wake‑word detection / status events.  
-> * `stream_speaker` receives raw PCM data over TCP and pushes it into a lock‑free pipe.  
-> * `speaker_task` dequeues from that pipe and writes it to the I²S TX DMA.  
-
+> * `audio_capture_task` reads I²S, converts to mono `f32`, buffers into chunks of `1280` samples, and sends them to the server.  
+> * For push‑to‑talk, it sends a `PTT_START` / `PTT_DATA` / `PTT_END` sequence and receives a final success/failure byte.  
+> * `stream_speaker` accepts raw PCM data over TCP and feeds it into the lock‑free pipe.  
+> * `speaker_task` dequeues from that pipe and writes to the I²S TX DMA.  
+> * All tasks listen on global channels and can be gracefully started/stopped at runtime.  
 
 <br><br>
 
@@ -196,4 +216,4 @@ You can also push arbitrary audio using `play(data: &[u8])`.
 ## **License**
 
 This project is licensed under the terms of the MIT license.  
-See the `LICENSE` file in the repository for full details.   
+See the `LICENSE` file in the repository for full details.

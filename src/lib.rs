@@ -70,7 +70,10 @@
 // }
 // ```
 // ───────────────────────────────────────────────────────────────────────
+
 #![no_std]
+#![forbid(unsafe_code)]
+#[allow(dead_code)]
 
 use defmt::{info, debug, error};
 use defmt::Debug2Format;
@@ -91,13 +94,15 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use libm::sqrtf;
 use defmt::Format;
 
+
 extern crate alloc;
 
 // ───────────────────────────────────────────────────────────────────────
 // CONSTANTS
 
+pub static MEDIA_IS_PLAYING: AtomicBool = AtomicBool::new(false);
 const STEREO_SAMPLES_PER_READ: usize = 256;
-const MONO_SAMPLES_PER_READ: usize = STEREO_SAMPLES_PER_READ / 2;
+const _MONO_SAMPLES_PER_READ: usize = STEREO_SAMPLES_PER_READ / 2;
 /// MUST MATCH WAKE WORD CHUNK SIZE
 pub const OWW_MODEL_CHUNK_SIZE: usize = 1280;
 
@@ -106,7 +111,7 @@ const TCP_TX_BUF_SIZE: usize = 4096;
 
 pub const SPEAKER_DMA_BUFFER_SIZE: usize = 65472;
 
-const STEREO_SAMPLES_PER_WRITE: usize = 256;
+const _STEREO_SAMPLES_PER_WRITE: usize = 256;
 const PLAYBACK_TCP_RX_BUF_SIZE: usize = 4096;
 const PLAYBACK_TCP_TX_BUF_SIZE: usize = 2048;
 const RING_BUFFER_SIZE: usize = 16384;
@@ -121,7 +126,8 @@ const DONE_SOUND: &[u8] =
 #[cfg(feature = "sounds")]
 const FAIL_SOUND: &[u8] =
     include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/sound/fail_esp.wav"));
-
+const BEEP_SOUND: &[u8] = 
+    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/sound/beep_esp.wav"));
 
 // VOICE COMMAND CONSTRUCTOR
 pub trait CommandHandler {
@@ -141,12 +147,13 @@ pub enum VoiceCommand {
     Disabled,
     Pushed,
     Released,
+    Intercom,
 }
 
 pub static VOICE_CMD: embassy_sync::channel::Channel<
     embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
     VoiceCommand,
-    1,
+    3,
 > = embassy_sync::channel::Channel::new();
 
 // SPEAKER
@@ -178,7 +185,7 @@ pub static STREAM_CMD: embassy_sync::channel::Channel<
 // HELPERS
 
 // SIMPLE RESAMPLER
-fn linear_resample(input: &[f32], input_rate: u32, output_rate: u32) -> Vec<f32> {
+fn _linear_resample(input: &[f32], input_rate: u32, output_rate: u32) -> Vec<f32> {
     if input_rate == output_rate {
         return input.to_vec();
     }
@@ -195,12 +202,12 @@ fn linear_resample(input: &[f32], input_rate: u32, output_rate: u32) -> Vec<f32>
         let frac = input_idx - idx_floor as f64;
 
         let sample = if idx_floor < input.len() - 1 {
-            // Linear interpolation between two samples
+            // LINEAR INTERPOLATION BETWEEN TWO SAMPLES
             let a = input[idx_floor] as f64;
             let b = input[idx_ceil] as f64;
             (a + (b - a) * frac) as f32
         } else {
-            // Last sample – repeat
+            // LAST SAMPLE – REPEAT
             input[idx_floor] as f32
         };
 
@@ -212,14 +219,13 @@ fn linear_resample(input: &[f32], input_rate: u32, output_rate: u32) -> Vec<f32>
 }
 
 // RMS BASED VAD
-fn rms_f32(samples: &[f32]) -> f32 {
+fn _rms_f32(samples: &[f32]) -> f32 {
     if samples.is_empty() {
         return 0.0;
     }
     let sum_squares: f32 = samples.iter().map(|&x| x * x).sum();
     sqrtf(sum_squares / samples.len() as f32)
 }
-
 
 
 pub struct DcBlock {
@@ -271,7 +277,13 @@ pub async fn play_ding() { play_sound(DING_SOUND).await; }
 pub async fn play_done() { play_sound(DONE_SOUND).await; }
 #[cfg(feature = "sounds")]
 pub async fn play_fail() { play_sound(FAIL_SOUND).await; }
-
+#[cfg(feature = "sounds")]
+pub async fn beep_loop(active: &AtomicBool) {    
+    while active.load(Ordering::Relaxed) {
+        play_sound(BEEP_SOUND).await;
+        Timer::after(Duration::from_secs(6)).await;
+    }
+}
 
 // ───────────────────────────────────────────────────────────────────────
 // MICROPHONE
@@ -314,23 +326,16 @@ impl Microphone {
                 }
             }
     
+            let mut stereo = [0i16; STEREO_SAMPLES_PER_READ];
+            for (i, pair) in self.stereo_buffer.chunks_exact(2).enumerate() {
+                stereo[i] = i16::from_le_bytes([pair[0], pair[1]]);
+            }    
+
+            // DEBUGGING
             #[cfg(debug_assertions)]
             {
-                let stereo = unsafe {
-                    core::slice::from_raw_parts(
-                        self.stereo_buffer.as_ptr() as *const i16,
-                        STEREO_SAMPLES_PER_READ,
-                    )
-                };
                 info!("[MIC i16]: {:?}", &stereo[..8.min(stereo.len())]);
             }
-    
-            let stereo = unsafe {
-                core::slice::from_raw_parts(
-                    self.stereo_buffer.as_ptr() as *const i16,
-                    STEREO_SAMPLES_PER_READ,
-                )
-            };
     
             for chunk in stereo.chunks(2) {
                 let sum = chunk[0] as f32 + chunk[1] as f32;
@@ -376,7 +381,7 @@ impl Microphone {
 
 
 // SEND RECORDED AUDIO TO THE SERVER USING THE PUSH-TO-TALK PROTOCOL (ROOM = "oneshot")
-async fn send_ptt_to_server(
+async fn _send_ptt_to_server(
     stack: &'static Stack<'static>,
     host: &str,
     port: u16,
@@ -437,13 +442,12 @@ async fn send_ptt_to_server(
         header[1..5].copy_from_slice(&num.to_le_bytes());
         write_all(&mut socket, &header).await?;
 
-        let bytes = unsafe {
-            core::slice::from_raw_parts(
-                chunk.as_ptr() as *const u8,
-                chunk.len() * 4,
-            )
-        };
-        write_all(&mut socket, bytes).await?;
+        let mut byte_vec: Vec<u8> = Vec::with_capacity(chunk.len() * 4);
+        for &sample in chunk {
+            byte_vec.extend_from_slice(&sample.to_le_bytes());
+        }
+        write_all(&mut socket, &byte_vec).await?;
+        
     }
 
     // PTT_END
@@ -510,10 +514,9 @@ pub async fn audio_capture_task(
         info!("🎙️  💤");
         let cmd = VOICE_CMD.receive().await; // BLOCKS UNTIL `Enabled` 
         debug!("Received command: {:?}", cmd);
-
         
         match cmd {
-            // COMMAND: `Enabled` - ENABLES WAKE WORD DETECTION
+            // COMMAND: `Enabled` - ENABLES WAKE WORD DETECTION/STREAMS MICROPHONE AUDIO
             VoiceCommand::Enabled => {
                 // NOW ENABLED
                 let mut rx_buffer = [0u8; TCP_RX_BUF_SIZE];
@@ -700,7 +703,7 @@ pub async fn audio_capture_task(
                 // RECORD AND STREAMING LOOP
                 'record: loop {
                     // READ ONE CHUNK FROM THE MIC
-                    let silent = match mic.read_chunk_into(&mut chunk_buf).await {
+                    let _silent = match mic.read_chunk_into(&mut chunk_buf).await {
                         Ok(v) => v,
                         Err(_) => {
                             error!("I2S read error – aborting PTT");
@@ -769,6 +772,88 @@ pub async fn audio_capture_task(
                 let _ = socket.close();
             }
             
+            
+            // COMMAND: `Intercom` – STREAM MICROPHONE AUDIO TO THE BACKEND SPEAKER (ENABLE STREAMING TASK TO MAKE IT BIDIRECTIONAL) 
+            VoiceCommand::Intercom => {
+                let mut rx_buffer = [0u8; TCP_RX_BUF_SIZE];
+                let mut tx_buffer = [0u8; TCP_TX_BUF_SIZE];
+                let mut socket = TcpSocket::new(stack.clone(), &mut rx_buffer, &mut tx_buffer);
+                socket.set_timeout(Some(Duration::from_secs(10)));
+            
+                if let Err(e) = socket.connect(remote_endpoint).await {
+                    error!("❌ Intercom connect error: {:?}, retrying in 5s", e);
+                    Timer::after(Duration::from_secs(5)).await;
+                    continue;
+                }
+                info!("📡 Intercom streaming to {}", remote_addr);
+            
+                // HANDSHAKE WITH FORCED ROOM NAME: "intercom"
+                let intercom_room = b"intercom";
+                let intercom_len = intercom_room.len() as u32;
+            
+                let len_bytes = intercom_len.to_le_bytes();
+                let mut written = 0;
+                while written < len_bytes.len() {
+                    match socket.write(&len_bytes[written..]).await {
+                        Ok(n) => written += n,
+                        Err(e) => {
+                            error!("intercom handshake length fail: {:?}", e);
+                            break;
+                        }
+                    }
+                }
+            
+                if written == len_bytes.len() {
+                    let mut written = 0;
+                    while written < intercom_room.len() {
+                        match socket.write(&intercom_room[written..]).await {
+                            Ok(n) => written += n,
+                            Err(e) => {
+                                error!("failed to send intercom room: {:?}", e);
+                                break;
+                            }
+                        }
+                    }
+                }
+                if let Err(e) = socket.flush().await {
+                    error!("failed to flush intercom handshake: {:?}", e);
+                }
+            
+                // STREAM MIC CHUNKS
+                'stream: loop {
+                    // CHECK FOR `Disabled` COMMAND WITHOUT BLOCKING
+                    if let Ok(VoiceCommand::Disabled) = VOICE_CMD.try_receive() {
+                        info!("Intercom disabled – returning to idle");
+                        break 'stream;
+                    }
+            
+                    // READ ONE CHUNK FROM THE MIC
+                    let _silent = match mic.read_chunk_into(&mut chunk_buf).await {
+                        Ok(v) => v,
+                        Err(_) => {
+                            error!("I2S read error in intercom");
+                            Timer::after(Duration::from_millis(10)).await;
+                            continue;
+                        }
+                    };
+            
+                    // SEND CHUNK
+                    let mut written = 0;
+                    while written < chunk_buf.len() {
+                        match socket.write(&chunk_buf[written..]).await {
+                            Ok(n) => written += n,
+                            Err(e) => {
+                                error!("Intercom send error: {:?}", e);
+                                break 'stream;
+                            }
+                        }
+                    }
+                }
+            
+                let _ = socket.close();
+                info!("Intercom ended – idle");
+            }
+                        
             // COMMAND: `Released` - USED TO SIGNAL END OF PUSH-TO-TALK
             VoiceCommand::Released => {
                 debug!("Released while idle, ignoring");
@@ -792,24 +877,25 @@ static PIPE: Pipe<CriticalSectionRawMutex, RING_BUFFER_SIZE> = Pipe::new();
 pub async fn speaker_task(
     mut transfer: I2sWriteDmaTransferAsync<'static, &'static mut [u8; SPEAKER_DMA_BUFFER_SIZE]>,
 ) -> ! {
-    let mut pipe_buf = [0u8; 1024];
+    let mut pipe_buf = [0u8; 256];
     let silence = [0u8; 256];
 
     loop {
         // IDLE - WAIT FOR START SIGNAL
         info!("🔊 💤");
+        //SPEAKER_CMD.send(SpeakerCommand::Start).await;
         let cmd = SPEAKER_CMD.receive().await; // BLOCKS UNTIL `Start` 
         debug!("Received command: {:?}", cmd);
         
         match cmd {    
             SpeakerCommand::Start => {
-                let mut stopped = false;  
+                let mut _stopped = false;  
                 info!("🔊 ☑️");         
                 
                 'stream: loop {
                     // CHECK FOR STOP SIGNAL WITHOUT BLOCKING
                     if let Ok(SpeakerCommand::Stop) = SPEAKER_CMD.try_receive() {
-                        stopped = true;
+                        _stopped = true;
                         info!("Pausing speaker task");
                         break 'stream;
                     }
@@ -818,17 +904,18 @@ pub async fn speaker_task(
                         Ok(free) => free,
                         Err(e) => {
                             error!("DMA available error: {:?}", e);
+                            //panic!("I2S TX IS DEAD!");
                             break 'stream;
                         }
                     };
                     if free == 0 {
-                        Timer::after(Duration::from_micros(100)).await;
+                        Timer::after(Duration::from_micros(1)).await;
                         continue;
                     }
 
                     let to_read = free.min(pipe_buf.len());
                     let read_future = PIPE.read(&mut pipe_buf[..to_read]);
-                    let timeout = Timer::after(Duration::from_millis(2));
+                    let timeout = Timer::after(Duration::from_millis(1));
 
                     match select(read_future, timeout).await {
                         Either::First(n) if n > 0 => {
@@ -850,6 +937,8 @@ pub async fn speaker_task(
     }
 }     
 
+
+// STREAMING TASK
 #[embassy_executor::task]
 pub async fn stream_speaker(
     stack: &'static Stack<'static>,
@@ -867,6 +956,7 @@ pub async fn stream_speaker(
                 // NOW STREAMING TO THE ESP32 IS ALLOWED
                 stack.wait_link_up().await;
                 stack.wait_config_up().await;
+                MEDIA_IS_PLAYING.store(false, Ordering::Release);
                 info!("📡 🔊 💤");
 
                 loop {
@@ -883,6 +973,7 @@ pub async fn stream_speaker(
                         Either::First(Ok(())) => {
                             // CLIENT CONNECTED!
                             info!("📡 ☑️ 🔊");
+                            MEDIA_IS_PLAYING.store(true, Ordering::Release);
                             socket.set_timeout(Some(Duration::from_secs(30)));
                         }
                         Either::First(Err(e)) => {
@@ -936,10 +1027,12 @@ pub async fn stream_speaker(
                             // `Stop` OR TIMEOUT
                             Either::Second(Either::First(StreamCommand::Stop)) => {
                                 info!("📡 🚧 🔇");
+                                MEDIA_IS_PLAYING.store(false, Ordering::Release);
                                 break 'read;
                             }
                             Either::Second(Either::Second(_)) => {
                                 // INACTIVITY
+                                MEDIA_IS_PLAYING.store(false, Ordering::Release);
                                 debug!("idle timeout disconnecting");
                                 break 'read;
                             }
@@ -947,6 +1040,7 @@ pub async fn stream_speaker(
                         }
                     }
 
+                    MEDIA_IS_PLAYING.store(false, Ordering::Release);
                     let _ = socket.close();
                     info!("🔇 💤");
                 }

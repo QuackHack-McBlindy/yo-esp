@@ -10,7 +10,7 @@ authors    = ["QuackHack-McBlindy"]
 repository = "https://github.com/QuackHack-McBlindy/yo-esp"
 license    = "MIT"
 readme     = "README.md"
-keywords   = [ "no-std", "esp-hal", "embedded", "i2s", "audio", "esp32s3", "embassy", "esp32"]
+keywords   = [ "no-std", "esp-hal", "embedded", "audio", "esp32"]
 categories = [
     "embedded",
     "no-std",
